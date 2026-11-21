@@ -2,11 +2,23 @@ name: Build ShuiCast Standalone
 
 on:
   push:
+    branches: ['**']
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '**.txt'
+    tags: ['**']
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: windows-2022
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
@@ -22,6 +34,9 @@ jobs:
 
       - name: Apply fixes 2 (encoder lock, multi-instance warning, HE-AAC High / LC-AAC)
         run: python tools/shuicast_fixes2.py trunk
+
+      - name: Apply fixes 3 (Live Recording volume with speakers)
+        run: python tools/shuicast_fixes3.py trunk
         
       - name: Patch sources for modern toolchain
         working-directory: trunk/shuicast
@@ -68,3 +83,17 @@ jobs:
           name: shuicast-standalone-bundle
           path: dist/
           if-no-files-found: error
+
+      - name: Keep only the latest 2 artifacts
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $name = 'shuicast-standalone-bundle'
+          $json = gh api "repos/${{ github.repository }}/actions/artifacts?name=$name&per_page=100" | ConvertFrom-Json
+          $old = $json.artifacts | Where-Object { -not $_.expired } | Sort-Object created_at -Descending | Select-Object -Skip 2
+          foreach ($a in $old) {
+            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$($a.id)"
+            Write-Host "deleted artifact $($a.id) ($($a.created_at))"
+          }

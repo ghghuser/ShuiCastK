@@ -37,6 +37,9 @@ jobs:
 
       - name: Apply fixes 3 (Live Recording volume with speakers)
         run: python tools/shuicast_fixes3.py trunk
+
+      - name: Apply fixes 4 (encoder comment - Basic Settings field and list column)
+        run: python tools/shuicast_fixes4.py trunk
         
       - name: Patch sources for modern toolchain
         working-directory: trunk/shuicast

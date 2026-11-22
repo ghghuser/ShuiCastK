@@ -23,24 +23,21 @@ jobs:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
       
-      - name: Apply ShuiCast patches (Netladio, recording file name)
-        run: python tools/shuicast_patch.py trunk
-        
-      - name: Apply dim theme
-        run: python tools/shuicast_dim.py trunk
-        
-      - name: Apply stability fixes (fflush, recording recovery)
-        run: python tools/shuicast_fixes.py trunk
+      - name: Apply patch 1 - Netladio (DJ name, charset, recording file name)
+        run: python tools/01_netladio.py trunk
 
-      - name: Apply fixes 2 (encoder lock, multi-instance warning, HE-AAC High / LC-AAC)
-        run: python tools/shuicast_fixes2.py trunk
+      - name: Apply patch 2 - stability (fflush, mono recording, recording recovery, encoder lock, multi-instance warning, config backup)
+        run: python tools/02_stability.py trunk
 
-      - name: Apply fixes 3 (Live Recording volume with speakers)
-        run: python tools/shuicast_fixes3.py trunk
+      - name: Apply patch 3 - encoders (AAC and Ogg quality, HE-AAC and LC-AAC, reconnect crash, missing DLL list)
+        run: python tools/03_encoders.py trunk
 
-      - name: Apply fixes 4 (encoder comment - Basic Settings field and list column)
-        run: python tools/shuicast_fixes4.py trunk
-        
+      - name: Apply patch 4 - UI (dim theme, list columns, window resize, meters, Live Recording volume, comment)
+        run: python tools/04_ui.py trunk
+
+      - name: Apply patch 5 - TLS (HTTPS)
+        run: python tools/05_tls.py trunk
+
       - name: Patch sources for modern toolchain
         working-directory: trunk/shuicast
         shell: pwsh

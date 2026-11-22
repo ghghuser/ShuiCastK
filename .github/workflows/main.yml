@@ -24,19 +24,19 @@ jobs:
       - uses: microsoft/setup-msbuild@v2
       
       - name: Apply patch 1 - Netladio (DJ name, charset, recording file name)
-        run: python tools/01_netladio.py trunk
+        run: python tools/shc_01_netladio.py trunk
 
       - name: Apply patch 2 - stability (fflush, mono recording, recording recovery, encoder lock, multi-instance warning, config backup)
-        run: python tools/02_stability.py trunk
+        run: python tools/shc_02_stability.py trunk
 
       - name: Apply patch 3 - encoders (AAC and Ogg quality, HE-AAC and LC-AAC, reconnect crash, missing DLL list)
-        run: python tools/03_encoders.py trunk
+        run: python tools/shc_03_encoders.py trunk
 
       - name: Apply patch 4 - UI (dim theme, list columns, window resize, meters, Live Recording volume, comment)
-        run: python tools/04_ui.py trunk
+        run: python tools/shc_04_ui.py trunk
 
       - name: Apply patch 5 - TLS (HTTPS)
-        run: python tools/05_tls.py trunk
+        run: python tools/shc_05_tls.py trunk
 
       - name: Patch sources for modern toolchain
         working-directory: trunk/shuicast

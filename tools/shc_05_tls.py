@@ -99,6 +99,7 @@ typedef struct tlsc_conn_s {
     int             outcap;
     int             refs;
     int             dead;
+    int             ready;      /* handshake finished */
     CRITICAL_SECTION cs;
 } tlsc_conn;
 
@@ -132,7 +133,8 @@ static void tlsc_free_conn(tlsc_conn *c)
     free(c);
 }
 
-/* find the connection of a socket and take a reference to it */
+/* find the connection of a socket and take a reference to it. A connection that is
+   being closed is returned too (the caller then fails instead of sending plain text). */
 static tlsc_conn *tlsc_acquire(SOCKET s)
 {
     tlsc_conn *found = NULL;
@@ -140,11 +142,15 @@ static tlsc_conn *tlsc_acquire(SOCKET s)
 
     tlsc_lock();
     for (i = 0; i < TLSC_MAX_CONN; i++) {
-        if (g_tlsc_table[i] != NULL && g_tlsc_table[i]->sock == s && !g_tlsc_table[i]->dead) {
+        if (g_tlsc_table[i] != NULL && g_tlsc_table[i]->sock == s) {
             found = g_tlsc_table[i];
-            found->refs++;
-            break;
+            if (!found->dead) {
+                break;   /* a live connection wins over one that is being closed */
+            }
         }
+    }
+    if (found != NULL) {
+        found->refs++;
     }
     tlsc_unlock();
     return found;
@@ -285,7 +291,7 @@ static int tlsc_attach(SOCKET s, const char *host, const char *pinned, tlsc_trus
     }
     InitializeCriticalSection(&c->cs);
     c->sock = s;
-    c->refs = 1;
+    c->refs = 2;   /* one for the table, one for this function */
     c->inbuf = (unsigned char *) malloc(TLSC_INBUF_SIZE);
     c->plain = NULL;
     if (c->inbuf == NULL) {
@@ -306,6 +312,21 @@ static int tlsc_attach(SOCKET s, const char *host, const char *pinned, tlsc_trus
         return 0;
     }
     c->haveCred = 1;
+
+    /* in the table from the start, so that tlsc_close() during the handshake finds it */
+    tlsc_lock();
+    for (i = 0; i < TLSC_MAX_CONN; i++) {
+        if (g_tlsc_table[i] == NULL) {
+            g_tlsc_table[i] = c;
+            break;
+        }
+    }
+    tlsc_unlock();
+    if (i >= TLSC_MAX_CONN) {
+        _snprintf(err, errlen, "too many TLS connections");
+        tlsc_free_conn(c);
+        return 0;
+    }
 
     flags = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT | ISC_REQ_CONFIDENTIALITY | ISC_RET_EXTENDED_ERROR |
             ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM | ISC_REQ_MANUAL_CRED_VALIDATION;
@@ -352,8 +373,11 @@ static int tlsc_attach(SOCKET s, const char *host, const char *pinned, tlsc_trus
         }
         first = 0;
 
-        if (outb[0].cbBuffer > 0 && outb[0].pvBuffer != NULL) {
-            int sent = tlsc_raw_send_all(s, (const unsigned char *) outb[0].pvBuffer, (int) outb[0].cbBuffer);
+        if (outb[0].pvBuffer != NULL) {
+            int sent = 0;
+            if (outb[0].cbBuffer > 0) {
+                sent = tlsc_raw_send_all(s, (const unsigned char *) outb[0].pvBuffer, (int) outb[0].cbBuffer);
+            }
             FreeContextBuffer(outb[0].pvBuffer);
             if (sent < 0) {
                 _snprintf(err, errlen, "send failed during TLS handshake");
@@ -443,26 +467,33 @@ static int tlsc_attach(SOCKET s, const char *host, const char *pinned, tlsc_trus
         goto done;
     }
 
-    tlsc_lock();
-    for (i = 0; i < TLSC_MAX_CONN; i++) {
-        if (g_tlsc_table[i] == NULL) {
-            g_tlsc_table[i] = c;
-            ok = 1;
-            break;
-        }
-    }
-    tlsc_unlock();
-    if (!ok) {
-        _snprintf(err, errlen, "too many TLS connections");
-    }
+    ok = 1;
 
 done:
     if (cert != NULL) {
         CertFreeCertificateContext(cert);
     }
-    if (!ok) {
-        tlsc_free_conn(c);
+    tlsc_lock();
+    if (ok && c->dead) {
+        ok = 0;
+        _snprintf(err, errlen, "disconnected during TLS handshake");
     }
+    if (ok) {
+        c->ready = 1;
+    }
+    else if (!c->dead) {
+        /* take it out of the table (tlsc_close() has not done so) */
+        for (i = 0; i < TLSC_MAX_CONN; i++) {
+            if (g_tlsc_table[i] == c) {
+                g_tlsc_table[i] = NULL;
+                c->dead = 1;
+                c->refs--;
+                break;
+            }
+        }
+    }
+    tlsc_unlock();
+    tlsc_release(c);
     return ok;
 }
 
@@ -476,7 +507,10 @@ static int tlsc_send(SOCKET s, const char *data, int len, int flags)
         return send(s, data, len, flags);
     }
     EnterCriticalSection(&c->cs);
-    while (done < len && !c->dead) {
+    if (!c->ready) {
+        done = -1;
+    }
+    while (done >= 0 && done < len && !c->dead) {
         SecBuffer     b[4];
         SecBufferDesc d;
         int           chunk = len - done;
@@ -536,7 +570,7 @@ static int tlsc_recv(SOCKET s, char *buf, int len, int flags)
         SECURITY_STATUS ss;
         int           i;
 
-        if (c->dead) {
+        if (c->dead || !c->ready) {
             result = -1;
             break;
         }
@@ -624,21 +658,22 @@ static int tlsc_close(SOCKET s)
 {
     tlsc_conn *c = NULL;
     int        i;
+    int        result;
+    int        ready = 0;
 
     tlsc_lock();
     for (i = 0; i < TLSC_MAX_CONN; i++) {
-        if (g_tlsc_table[i] != NULL && g_tlsc_table[i]->sock == s) {
-            c = g_tlsc_table[i];
-            g_tlsc_table[i] = NULL;
+        if (g_tlsc_table[i] != NULL && g_tlsc_table[i]->sock == s && !g_tlsc_table[i]->dead) {
+            c = g_tlsc_table[i];   /* the reference of the table is now ours */
             c->dead = 1;
-            c->refs++;
+            ready = c->ready;
             break;
         }
     }
     tlsc_unlock();
 
     if (c != NULL) {
-        if (TryEnterCriticalSection(&c->cs)) {
+        if (ready && TryEnterCriticalSection(&c->cs)) {
             /* best effort close_notify */
             DWORD         type = SCHANNEL_SHUTDOWN;
             SecBuffer     ob;
@@ -654,20 +689,21 @@ static int tlsc_close(SOCKET s)
             od.cBuffers = 1;
             od.pBuffers = &tb;
             if (ApplyControlToken(&c->ctx, &od) == SEC_E_OK) {
+                SECURITY_STATUS ss;
+
                 ob.pvBuffer = NULL;
                 ob.cbBuffer = 0;
                 ob.BufferType = SECBUFFER_TOKEN;
                 od.pBuffers = &ob;
-                if (InitializeSecurityContextA(&c->cred, &c->ctx, NULL,
-                                               ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT | ISC_REQ_CONFIDENTIALITY |
-                                               ISC_RET_EXTENDED_ERROR | ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM,
-                                               0, 0, NULL, 0, &c->ctx, &od, &attrs, &ts) == SEC_E_OK) {
-                    if (ob.pvBuffer != NULL && ob.cbBuffer > 0) {
-                        tlsc_raw_send_all(s, (const unsigned char *) ob.pvBuffer, (int) ob.cbBuffer);
-                    }
-                    if (ob.pvBuffer != NULL) {
-                        FreeContextBuffer(ob.pvBuffer);
-                    }
+                ss = InitializeSecurityContextA(&c->cred, &c->ctx, NULL,
+                                                ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT | ISC_REQ_CONFIDENTIALITY |
+                                                ISC_RET_EXTENDED_ERROR | ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM,
+                                                0, 0, NULL, 0, &c->ctx, &od, &attrs, &ts);
+                if ((ss == SEC_E_OK || ss == SEC_I_CONTEXT_EXPIRED) && ob.pvBuffer != NULL && ob.cbBuffer > 0) {
+                    tlsc_raw_send_all(s, (const unsigned char *) ob.pvBuffer, (int) ob.cbBuffer);
+                }
+                if (ob.pvBuffer != NULL) {
+                    FreeContextBuffer(ob.pvBuffer);
                 }
             }
             LeaveCriticalSection(&c->cs);
@@ -675,9 +711,21 @@ static int tlsc_close(SOCKET s)
         else {
             shutdown(s, 2);   /* wake up a call that is still running */
         }
+    }
+    result = closesocket(s);
+    if (c != NULL) {
+        /* removed only now: until here tlsc_send() must not treat the socket as plain */
+        tlsc_lock();
+        for (i = 0; i < TLSC_MAX_CONN; i++) {
+            if (g_tlsc_table[i] == c) {
+                g_tlsc_table[i] = NULL;
+                break;
+            }
+        }
+        tlsc_unlock();
         tlsc_release(c);
     }
-    return closesocket(s);
+    return result;
 }
 
 #endif /* TLSCLIENT_H_INCLUDED */
@@ -816,10 +864,21 @@ def fix_tls_lib(t):
     t, n = re.subn(r"closesocket\( m_SCSocket(Ctrl)? \)", lambda m: "tlsc_close( m_SCSocket" + (m.group(1) or "") + " )", t)
     if n != 5:
         fail("lib closesocket: expected 5, found %d" % n)
+    # the title update uses its own socket variable: updates running at the same time, or a
+    # disconnect, must not close (or lose) each other's socket
     t = sub_once(
         t,
-        r"send\( m_SCSocketCtrl, contentString, strlen\( contentString \), 0 \);",
-        lambda m: "if ( !m_UseTLS || acTlsAttach( this, m_SCSocketCtrl, 0 ) )\n                    {\n                        tlsc_send( m_SCSocketCtrl, contentString, strlen( contentString ), 0 );\n                    }",
+        r"m_SCSocketCtrl = (m_CtrlChannel\.DoConnect\([^;]*\);)\n"
+        r"([ \t]*)if \( m_SCSocketCtrl != -1 \)"
+        r"((?:\n[^\n]*){0,3}?\n[ \t]*)send\( m_SCSocketCtrl, contentString, strlen\( contentString \), 0 \);"
+        r"((?:\n[^\n]*){0,3}?\n[ \t]*)tlsc_close\( m_SCSocketCtrl \);",
+        lambda m: "int ctrlSocket = " + m.group(1) + "\n"
+        + m.group(2) + "if ( ctrlSocket != -1 )"
+        + m.group(3) + "if ( !m_UseTLS || acTlsAttach( this, ctrlSocket, 0 ) )\n"
+        + "                    {\n"
+        + "                        tlsc_send( ctrlSocket, contentString, strlen( contentString ), 0 );\n"
+        + "                    }"
+        + m.group(4) + "tlsc_close( ctrlSocket );",
         "lib control socket send",
     )
     t = sub_once(
@@ -827,6 +886,15 @@ def fix_tls_lib(t):
         r"[ \t]*SetServerStatus\( \"Socket connected\" \);\n",
         lambda m: m.group(0) + "    // " + MARK_TLS + "\n    if ( m_UseTLS && !acTlsAttach( this, m_SCSocket, 1 ) )\n    {\n        tlsc_close( m_SCSocket );\n        return 0;\n    }\n",
         "lib connect",
+    )
+    # forget a socket once it is closed: a later disconnect must not close the same number
+    # again (Windows may have given it to another connection by then)
+    t = sub_n(
+        t,
+        r"\n([ \t]*)tlsc_close\( m_SCSocket \);\n(?=[ \t]*return 0;)",
+        lambda m: m.group(0) + m.group(1) + "m_SCSocket = 0;\n",
+        "lib forget closed socket",
+        count=3,
     )
     t = sub_once(
         t,

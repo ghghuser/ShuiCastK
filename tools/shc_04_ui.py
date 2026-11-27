@@ -598,6 +598,17 @@ def fix_rec_main(t):
         lambda m: m.group(1) + REC_DEVICE_CHANGED,
         "MainWindow.cpp OnSelchangeReccards",
     )
+
+    # (f) another input selected: the software volume of the previous input must not stay
+    t = sub_once(
+        t,
+        r"([ \t]*)BASS_RecordSetInput\( n, BASS_INPUT_ON, -1 \);\n",
+        lambda m: m.group(0)
+        + m.group(1) + "if (n != m_CurrentInput) {   /* " + MARK_REC + ": drop the previous input's software volume */\n"
+        + m.group(1) + "\tRecSoftMode(false);\n"
+        + m.group(1) + "}\n",
+        "MainWindow.cpp OnSelchangeRecdevices",
+    )
     return t
 
 
@@ -814,16 +825,6 @@ def comment_main(t):
         '    m_Encoders.InsertColumn( 5, "Comment" );   // ' + MARK_COMMENT + "\n"
         "    m_Encoders.SetColumnWidth( 5, 200 );\n",
         "MainWindow.cpp Comment column",
-    )
-    t = sub_once(
-        t,
-        r"\tif \(ok && n == LIST_NUMCOLS && order\[0\] == 0\) \{\n",
-        lambda m: "\t/* " + MARK_COMMENT + ": a column order saved with one column less stays valid (the new column goes last) */\n"
-        "\tif (ok && n == LIST_NUMCOLS - 1 && !used[LIST_NUMCOLS - 1]) {\n"
-        "\t\torder[n++] = LIST_NUMCOLS - 1;\n"
-        "\t}\n"
-        + m.group(0),
-        "MainWindow.cpp column order",
     )
     t = sub_once(
         t,

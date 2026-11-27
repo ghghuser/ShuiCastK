@@ -12,7 +12,7 @@ shc_02_stability.py - 安定性の修正 (ShuiCast)
                       Channels をグレーアウト (変更するとクラッシュした)
     5. 多重起動警告   同じフォルダ (= 同じ .cfg) のインスタンスが起動中なら確認
   [設定ファイル]
-    6. バックアップ   変更前を .bak1 / .bak2 (2世代) に残す。一度 .new に書いてから置き換え
+    6. バックアップ   変更前を .bak1 / .bak2 (2世代) に残す。一度 .new に書いてから置き換え。書き込みに失敗したら置き換えない
 
   [設定ウィンドウ]
     7. ロックの追従   設定ウィンドウを開いたまま接続 / 切断しても、すぐグレーアウト / 解除 (0.5秒ごと)。
@@ -441,12 +441,26 @@ static void CommitConfigFile ( const char *configFile, const char *tmpFile )
     }
     if ( !MoveFileExA( tmpFile, configFile, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED ) )
     {
-        CopyFileA( tmpFile, configFile, FALSE );
-        remove( tmpFile );
+        // keep the .new file when the copy fails too: it is the only copy of the new settings
+        if ( CopyFileA( tmpFile, configFile, FALSE ) ) remove( tmpFile );
     }
 }
 
 """
+
+
+# a write error (disk full etc.) must not replace the good config with a truncated one
+# (the first line takes the indentation of the replaced fclose line)
+CLOSE_AND_COMMIT = (
+    "int writeError = ferror( filep );",
+    "if ( fclose( filep ) != 0 ) writeError = 1;",
+    "if ( writeError )",
+    "{",
+    "    remove( tmpFile );",
+    "    LogMessage( LOG_ERROR, \"Cannot write config file %s\\n\", configFile );",
+    "}",
+    "else CommitConfigFile( configFile, tmpFile );",
+)
 
 
 def fix_backup(t):
@@ -472,7 +486,7 @@ def fix_backup(t):
         t,
         r'([ \t]*)fclose\( filep \);\n([ \t]*\}\n[ \t]*else\n[ \t]*\{\n[ \t]*LogMessage\( LOG_ERROR, "Cannot open config file)',
         lambda m: m.group(0).replace(
-            "fclose( filep );\n", "fclose( filep );\n" + m.group(1) + "CommitConfigFile( configFile, tmpFile );\n", 1
+            "fclose( filep );\n", "".join((m.group(1) if i else "") + ln + "\n" for i, ln in enumerate(CLOSE_AND_COMMIT)), 1
         ),
         "libshuicast.cpp config fclose",
     )

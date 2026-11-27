@@ -177,12 +177,13 @@ QMEM_LOAD = (
 )
 
 
-QMEM_SAVE = """    // %(m)s: also store the Quality of the type that is not selected
-    if ( encoder->IsEncoderType( ENCODER_AAC ) )
+QMEM_SAVE = """    // %(m)s: also store the Quality of the type(s) that are not selected
+    // (HE-AAC / LC-AAC / FHGAAC use neither field, so both are stored for them)
+    if ( !encoder->IsEncoderType( ENCODER_LAME ) && !encoder->IsEncoderType( ENCODER_OGG ) && !encoder->IsEncoderType( ENCODER_FLAC ) )
     {
         if ( %(ogg)s ) strcpy( encoder->m_OggQuality, LPCSTR( basicSettings->m_QualityOgg ) );
     }
-    if ( encoder->IsEncoderType( ENCODER_LAME ) || encoder->IsEncoderType( ENCODER_OGG ) || encoder->IsEncoderType( ENCODER_FLAC ) )
+    if ( !encoder->IsEncoderType( ENCODER_AAC ) )
     {
         if ( %(aac)s ) strcpy( encoder->m_AACQuality, LPCSTR( basicSettings->m_QualityAAC ) );
     }
@@ -409,7 +410,8 @@ static CString EncFindMissingImports(const CString &dllPath)
 		if (dos->e_magic == IMAGE_DOS_SIGNATURE && dos->e_lfanew > 0 &&
 			(DWORD) dos->e_lfanew + sizeof(IMAGE_NT_HEADERS32) < size) {
 			IMAGE_NT_HEADERS32 *nt = (IMAGE_NT_HEADERS32 *) (buf + dos->e_lfanew);
-			if (nt->Signature == IMAGE_NT_SIGNATURE && nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+			if (nt->Signature == IMAGE_NT_SIGNATURE && nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC &&
+				(size_t) ((BYTE *) (IMAGE_FIRST_SECTION(nt) + nt->FileHeader.NumberOfSections) - buf) <= size) {
 				DWORD impRva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
 				DWORD impOff = (impRva != 0) ? EncRvaToOffset(nt, impRva) : 0;
 				int guard = 0;
@@ -540,19 +542,19 @@ void CBasicSettings::ShowEncoderUnavailable(const CString &selected)
 		else {
 			DWORD err = GetLastError();
 			if (err == ERROR_BAD_EXE_FORMAT) {
-				_snwprintf(body, 1899, L"\u7406\u7531: %S \u306f\u898b\u3064\u304b\u308a\u307e\u3057\u305f\u304c\u300132bit\u7248\u3067\u306f\u306a\u3044\u305f\u3081\u8aad\u307f\u8fbc\u3081\u307e\u305b\u3093(\u30a8\u30e9\u30fc193)\u3002\n\n\u3053\u306e\u30a2\u30d7\u30ea\u306f32bit\u7248\u306a\u306e\u3067\u300132bit\u7248\u306e %S \u304c\u5fc5\u8981\u3067\u3059\u3002\n\n\u5834\u6240: %S", dll, dll, (LPCSTR) found);
+				_snwprintf(body, 1899, L"\u7406\u7531: %S \u306f\u898b\u3064\u304b\u308a\u307e\u3057\u305f\u304c\u300132bit\u7248\u3067\u306f\u306a\u3044\u305f\u3081\u8aad\u307f\u8fbc\u3081\u307e\u305b\u3093(\u30a8\u30e9\u30fc193)\u3002\n\n\u3053\u306e\u30a2\u30d7\u30ea\u306f32bit\u7248\u306a\u306e\u3067\u300132bit\u7248\u306e %S \u304c\u5fc5\u8981\u3067\u3059\u3002\n\n\u5834\u6240: %s", dll, dll, (LPCWSTR) CStringW(found));
 			}
 			else if (err == ERROR_MOD_NOT_FOUND) {
 				CString missing = EncFindMissingImports(found);
 				if (missing.IsEmpty()) {
-					_snwprintf(body, 1899, L"\u7406\u7531: %S \u306f\u898b\u3064\u304b\u308a\u307e\u3057\u305f\u304c\u3001\u8aad\u307f\u8fbc\u3081\u307e\u305b\u3093(\u30a8\u30e9\u30fc126)\u3002\n\n\u3053\u306eDLL\u304c\u5fc5\u8981\u3068\u3059\u308b\u5225\u306eDLL\u304c\u8db3\u308a\u306a\u3044\u53ef\u80fd\u6027\u304c\u3042\u308a\u307e\u3059\u3002\n\n\u8db3\u308a\u306a\u3044DLL: %s\n\n\u5834\u6240: %S", dll, L"(\u7279\u5b9a\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f\u3002VC\u30e9\u30f3\u30bf\u30a4\u30e0\u306a\u3069\u304c\u8db3\u308a\u306a\u3044\u5834\u5408\u304c\u3042\u308a\u307e\u3059)", (LPCSTR) found);
+					_snwprintf(body, 1899, L"\u7406\u7531: %S \u306f\u898b\u3064\u304b\u308a\u307e\u3057\u305f\u304c\u3001\u8aad\u307f\u8fbc\u3081\u307e\u305b\u3093(\u30a8\u30e9\u30fc126)\u3002\n\n\u3053\u306eDLL\u304c\u5fc5\u8981\u3068\u3059\u308b\u5225\u306eDLL\u304c\u8db3\u308a\u306a\u3044\u53ef\u80fd\u6027\u304c\u3042\u308a\u307e\u3059\u3002\n\n\u8db3\u308a\u306a\u3044DLL: %s\n\n\u5834\u6240: %s", dll, L"(\u7279\u5b9a\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f\u3002VC\u30e9\u30f3\u30bf\u30a4\u30e0\u306a\u3069\u304c\u8db3\u308a\u306a\u3044\u5834\u5408\u304c\u3042\u308a\u307e\u3059)", (LPCWSTR) CStringW(found));
 				}
 				else {
-					_snwprintf(body, 1899, L"\u7406\u7531: %S \u306f\u898b\u3064\u304b\u308a\u307e\u3057\u305f\u304c\u3001\u8aad\u307f\u8fbc\u3081\u307e\u305b\u3093(\u30a8\u30e9\u30fc126)\u3002\n\n\u3053\u306eDLL\u304c\u5fc5\u8981\u3068\u3059\u308b\u5225\u306eDLL\u304c\u8db3\u308a\u306a\u3044\u53ef\u80fd\u6027\u304c\u3042\u308a\u307e\u3059\u3002\n\n\u8db3\u308a\u306a\u3044DLL: %s\n\n\u5834\u6240: %S", dll, (LPCWSTR) CStringW((LPCSTR) missing), (LPCSTR) found);
+					_snwprintf(body, 1899, L"\u7406\u7531: %S \u306f\u898b\u3064\u304b\u308a\u307e\u3057\u305f\u304c\u3001\u8aad\u307f\u8fbc\u3081\u307e\u305b\u3093(\u30a8\u30e9\u30fc126)\u3002\n\n\u3053\u306eDLL\u304c\u5fc5\u8981\u3068\u3059\u308b\u5225\u306eDLL\u304c\u8db3\u308a\u306a\u3044\u53ef\u80fd\u6027\u304c\u3042\u308a\u307e\u3059\u3002\n\n\u8db3\u308a\u306a\u3044DLL: %s\n\n\u5834\u6240: %s", dll, (LPCWSTR) CStringW((LPCSTR) missing), (LPCWSTR) CStringW(found));
 				}
 			}
 			else {
-				_snwprintf(body, 1899, L"\u7406\u7531: %S \u306e\u8aad\u307f\u8fbc\u307f\u306b\u5931\u6557\u3057\u307e\u3057\u305f(\u30a8\u30e9\u30fc%lu)\u3002\n\n\u5834\u6240: %S", dll, (unsigned long) err, (LPCSTR) found);
+				_snwprintf(body, 1899, L"\u7406\u7531: %S \u306e\u8aad\u307f\u8fbc\u307f\u306b\u5931\u6557\u3057\u307e\u3057\u305f(\u30a8\u30e9\u30fc%lu)\u3002\n\n\u5834\u6240: %s", dll, (unsigned long) err, (LPCWSTR) CStringW(found));
 			}
 		}
 	}
@@ -671,7 +673,8 @@ def fix_dropdown_width(t):
         t,
         r"([ \t]*)return TRUE;([ \t]*)// return TRUE unless you set the focus to a control",
         lambda m: (
-            m.group(1) + "{\t/* " + MARK_UI + ": widen the drop-down list so the (DLL...) mark is not cut off */\n"
+            m.group(1) + "m_QualityCtrl.LimitText(24);\t/* " + MARK_UI + ": m_OggQuality / m_AACQuality are char[25] */\n"
+            + m.group(1) + "{\t/* " + MARK_UI + ": widen the drop-down list so the (DLL...) mark is not cut off */\n"
             + m.group(1) + "\tCDC *encDC = m_EncoderTypeCtrl.GetDC();\n"
             + m.group(1) + "\tif (encDC != NULL) {\n"
             + m.group(1) + "\t\tCFont *encOldFont = encDC->SelectObject(m_EncoderTypeCtrl.GetFont());\n"
@@ -697,6 +700,19 @@ def fix_selendok_refresh(t):
     mark = TAG + ": refresh"
     if mark in t:
         return t
+    # take over what was typed first: UpdateData(FALSE) below writes every member back
+    t = sub_once(
+        t,
+        r"([ \t]*)//UpdateData\(TRUE\);\n(?=\s*int selected = m_EncoderTypeCtrl\.GetCurSel\(\);)",
+        lambda m: (
+            m.group(1) + "{\t" + C_OPEN + " " + mark + ": keep what was typed in the other fields " + C_CLOSE + "\n"
+            + m.group(1) + "\tCString prevType = m_EncoderType;\n"
+            + m.group(1) + "\tUpdateData(TRUE);\n"
+            + m.group(1) + "\tm_EncoderType = prevType;\n"
+            + m.group(1) + "}\n"
+        ),
+        "BasicSettings.cpp OnSelendokEncoderType start",
+    )
     return sub_once(
         t,
         r"(void CBasicSettings::OnSelendokEncoderType\s*\(\)\s*\{(?:(?!\nvoid CBasicSettings::).)*?)(\n[ \t]*)UpdateFields\(\);([ \t]*\n\s*\})",
@@ -762,6 +778,19 @@ def fix_high_cpp(t):
     return t
 
 
+def fix_high_config(t):
+    # one settings window is shared by all encoders: forget the value kept for the previous one
+    mark = MARK_HIGH + " reset"
+    if mark in t:
+        return t
+    return sub_once(
+        t,
+        r"([ \t]*)m_CurrentEnc = encoder->encoderNumber;\n(?=\s*// shuicast_encoders: qmem|\s*basicSettings->SetStereoLabels)",
+        lambda m: m.group(0) + m.group(1) + "basicSettings->m_SavedChannels.Empty();   // " + mark + "\n",
+        "Config.cpp reset saved channels",
+    )
+
+
 def fix_lc_label(t):
     mark = TAG + ": lclabel"
     if mark in t:
@@ -778,7 +807,7 @@ def fix_lc_label(t):
 # apply
 # ----------------------------------------------------------------------
 
-patch_file("shuicast/Config.cpp", lambda t: fix_avail_config(fix_qmem_config(t)))
+patch_file("shuicast/Config.cpp", lambda t: fix_high_config(fix_avail_config(fix_qmem_config(t))))
 patch_file("shuicast/BasicSettings.h", lambda t: fix_high_header(fix_avail_header(fix_qmem_header(t))))
 patch_file("shuicast/BasicSettings.cpp", lambda t: fix_high_cpp(fix_dropdown_width(fix_selendok_refresh(fix_avail_cpp(fix_qmem_dialog(fix_ogg_ui(fix_aac_ui(t))))))))
 patch_file("libshuicast/libshuicast.cpp", lambda t: fix_lc_label(fix_loaddll(fix_aacp(fix_ogg_default(fix_aac_quality(t))))))

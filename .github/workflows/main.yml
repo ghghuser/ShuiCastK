@@ -38,6 +38,9 @@ jobs:
       - name: Apply patch 5 - TLS (HTTPS)
         run: python tools/shc_05_tls.py trunk
 
+      - name: Apply patch 6 - extra fixes
+        run: python tools/shc_06_fixes.py trunk
+
       - name: Patch sources for modern toolchain
         working-directory: trunk/shuicast
         shell: pwsh

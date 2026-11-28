@@ -191,7 +191,7 @@ def p_lib_h(t):
         t,
         r"    char_t\s+m_ServGenre\[100\]\s*=\s*\{\};\n",
         "    char_t                m_LadioDJ[256]            = {};  // Netladio DJ name (x-ladio-info)\n"
-        '    char_t                m_LadioCharset[10]        = {};  // "", "sjis" or "utf8"\n',
+        '    char_t                m_LadioCharset[256]       = {};  // "", "sjis" or "utf8" (as big as a config value)\n',
         "after",
         "libshuicast.h m_ServGenre",
     )

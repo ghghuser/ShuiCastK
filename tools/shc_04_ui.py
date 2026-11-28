@@ -1010,6 +1010,97 @@ def fix_add_limit(t):
 
 
 # ----------------------------------------------------------------------
+# 11. 接続処理中の削除・並び替え・追加・二重接続を防ぐ
+# ----------------------------------------------------------------------
+
+MARK_CONN = TAG + ": connguard"
+
+CONN_STATE = '\n/* shuicast_ui: connguard: state of the connect threads. While one is running, the list must not change */\nstatic volatile LONG s_connThreads = 0;          /* started and not finished yet */\nstatic volatile LONG s_connAllCancel = 0;        /* Disconnect was pressed during "Connect" */\nstatic volatile LONG s_connBusy[MAX_ENCODERS];   /* 1 = this encoder is being connected */\nstatic volatile LONG s_connCancel[MAX_ENCODERS]; /* Disconnect was pressed meanwhile */\n'
+
+CONN_FUNCS = '/* shuicast_ui: connguard: connect one encoder; never twice at the same time */\nstatic void ConnectOne(int i) {\n\tif (i < 0 || i >= MAX_ENCODERS || InterlockedCompareExchange(&s_connBusy[i], 1, 0) != 0) {\n\t\treturn;\n\t}\n\tInterlockedExchange(&s_connCancel[i], 0);\n\tif (!gEncoders[i]->IsConnected()) {\n\t\tgEncoders[i]->SetForceStop(false);\n\t\tint ret = gEncoders[i]->ConnectToServer();\n\t\tif (s_connCancel[i]) {\n\t\t\tif (gEncoders[i]->IsConnected()) {\n\t\t\t\tgEncoders[i]->DisconnectFromServer();\n\t\t\t}\n\t\t\tgEncoders[i]->SetForceStop(true);\n\t\t\tgEncoders[i]->m_ForcedDisconnect = false;\n\t\t}\n\t\telse if (!ret) {\n\t\t\tgEncoders[i]->m_ForcedDisconnect = true;\n\t\t}\n\t}\n\tInterlockedExchange(&s_connBusy[i], 0);\n}\n\n/* shuicast_ui: connguard: true (with a message) while a connect thread is running */\nstatic bool ConnectIsPending(CWnd *owner) {\n\tif (s_connThreads <= 0) {\n\t\treturn false;\n\t}\n\towner->MessageBox("Please wait until the connection attempt has finished.", "Message", MB_OK);\n\treturn true;\n}\n\nint CMainWindow::startshuicast(int which) {\n\tif (which == -1) {\n\t\tfor (int i = 0; i < gMain.GetNumEncoders() && !s_connAllCancel; i++) {\n\t\t\tif (IsEncoderChecked(i)) {\n\t\t\t\tConnectOne(i);\n\t\t\t}\n\t\t}\n\t}\n\telse {\n\t\tConnectOne(which);\n\t}\n\n\treturn 1;\n}\n'
+
+CONN_STOP = 'void CMainWindow::stopshuicast() {\n\t/* shuicast_ui: connguard: an encoder that is being connected is disconnected by its own thread */\n\tInterlockedExchange(&s_connAllCancel, 1);\n\tfor (int i = 0; i < gMain.GetNumEncoders(); i++) {\n\t\tgEncoders[i]->SetForceStop(true);\n\t\tif (i < MAX_ENCODERS && s_connBusy[i]) {\n\t\t\tInterlockedExchange(&s_connCancel[i], 1);\n\t\t}\n\t\telse {\n\t\t\tgEncoders[i]->DisconnectFromServer();\n\t\t}\n\t\tgEncoders[i]->m_ForcedDisconnect = false;\n\t}\n}\n'
+
+
+def fix_conn_guard(t):
+    if MARK_CONN in t:
+        return t
+    t = after(t, r"static UINT BASED_CODE[ \t]+indicators\[\][^\n]*\n", CONN_STATE, "connguard state")
+    # count the connect threads: up before each start, down when the thread function ends
+    t = sub_n(t, r"\n([ \t]*)(_beginthreadex\s*\(\s*NULL,)",
+              lambda m: "\n" + m.group(1) + "InterlockedIncrement(&s_connThreads);\n" + m.group(1) + m.group(2),
+              "connguard thread start", count=3)
+    t = sub_n(t, r"(int\s+(?:__stdcall\s+)?(?:startThread|startSpecificThread)\s*\(\s*void\s*\*\s*obj\s*\)(?s:.*?))\n([ \t]*)return\s*\(\s*1\s*\);",
+              lambda m: m.group(1) + "\n" + m.group(2) + "InterlockedDecrement(&s_connThreads);\n" + m.group(2) + "return(1);",
+              "connguard thread end", count=2)
+    t = sub_once(t, r"int CMainWindow::startshuicast\s*\(\s*int which\s*\)(?s:.*?)\n\}\n", lambda m: CONN_FUNCS, "connguard start")
+    t = sub_once(t, r"void CMainWindow::stopshuicast\s*\(\s*\)(?s:.*?)\n\}\n", lambda m: CONN_STOP, "connguard stop")
+    # Connect: not while an earlier attempt is still running
+    t = sub_once(t, r"(static bool connected = false;\s*if\s*\(\s*!connected\s*\)\s*\{)",
+                 lambda m: m.group(1) + "\n\t\tif (ConnectIsPending(this)) {\n\t\t\treturn;\n\t\t}\n\t\tInterlockedExchange(&s_connAllCancel, 0);",
+                 "connguard OnConnect")
+    check = "\n\tif (ConnectIsPending(this)) {   /* " + MARK_CONN + " */\n\t\treturn;\n\t}"
+    t = after(t, r"void CMainWindow::OnAddEncoder\s*\(\s*\)\s*\{", check, "connguard add")
+    t = after(t, r"void CMainWindow::OnPopupDelete\s*\(\s*\)\s*\{", check, "connguard delete")
+    t = after(t, r"void CMainWindow::MoveSelectedEncoder\s*\(\s*int dir\s*\)\s*\{", check, "connguard move")
+    # the reconnect timer keeps running behind the "Delete this encoder ?" box: check again
+    again = (
+        "\n\t\t\tif (ConnectIsPending(this)) {\n\t\t\t\treturn;\n\t\t\t}\n"
+        "\t\t\tfor (int c = 0; c < gMain.GetNumEncoders(); c++) {\n"
+        "\t\t\t\tif (gEncoders[c]->IsConnected()) {\n"
+        '\t\t\t\t\tMessageBox("You need to disconnect all the encoders before deleting one from the list", "Message", MB_OK);\n'
+        "\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t}"
+    )
+    t = after(t, r"if\s*\(\s*ret == IDYES\s*\)\s*\{(?=(?s:.*?)/\* " + TAG + r": delete \*/)", again, "connguard delete confirm")
+    # the settings stay locked while the encoder is being connected
+    t = sub_once(t, r"bool lk_held = \(lk->IsConnected\(\) != 0\);", lambda m: 'bool lk_held = (lk->IsConnected() != 0) || (enc <= MAX_ENCODERS && s_connBusy[enc - 1] != 0);', "connguard ProcessConfigDone")
+    if 'gEncoders[enc - 1]->IsConnected() != 0) ? TRUE : FALSE;' not in t:
+        fail("connguard IsEncoderConnected")
+    return t.replace('gEncoders[enc - 1]->IsConnected() != 0) ? TRUE : FALSE;', '(gEncoders[enc - 1]->IsConnected() != 0 || s_connBusy[enc - 1] != 0)) ? TRUE : FALSE;')
+
+
+# ----------------------------------------------------------------------
+# 12. 長い設定値で配列があふれないようにする
+# ----------------------------------------------------------------------
+
+MARK_LONG = TAG + ": longvalue"
+
+LONG_HELPER = "/* shuicast_ui: longvalue: copy into a fixed array, cutting what does not fit (never inside a Shift_JIS character) */\nstatic inline void acCopyN(char *d, size_t size, const char *s) {\n\tsize_t\tn = 0;\n\n\tif (size == 0) {\n\t\treturn;\n\t}\n\twhile (s[n] != '\\0') {\n\t\tsize_t step = (IsDBCSLeadByte((BYTE) s[n]) && s[n + 1] != '\\0') ? 2 : 1;\n\t\tif (n + step > size - 1) {\n\t\t\tbreak;\n\t\t}\n\t\tn += step;\n\t}\n\tmemmove(d, s, n);\n\td[n] = '\\0';\n}\ntemplate <size_t N> static inline void acCopy(char (&d)[N], const char *s) {\n\tacCopyN(d, N, s);\n}\n\n"
+
+
+def fix_long_lib(t):
+    if MARK_LONG in t:
+        return t
+    # reading the config file: no more lines than the table holds, names and values cut to size
+    t = sub_once(t, r"if\s*\(\s*p1\s*\)(?=\s*\{\s*strncpy\(configFileValues)",
+                 lambda m: "if (p1 && numConfigValues < (int) (sizeof(configFileValues) / sizeof(configFileValues[0])))", "config line limit")
+    t = sub_once(t, r"strncpy\(configFileValues\[numConfigValues\]\.Variable, buffer, p1 - buffer\);",
+                 lambda m: "*p1 = '\\000';\n\t\t\t\t\tacCopy(configFileValues[numConfigValues].Variable, buffer);", "config name")
+    t = sub_once(t, r"strcpy\(configFileValues\[numConfigValues\]\.Value, p1\);",
+                 lambda m: "acCopy(configFileValues[numConfigValues].Value, p1);", "config value")
+    t = sub_n(t, r"strcpy\((configFileValues\[\w+\]\.Value), (defaultvalue|destValue)\);",
+              lambda m: "acCopy(%s, %s);" % (m.group(1), m.group(2)), "config store", count=3)
+    t = sub_n(t, r"strcpy\(\s*destValue,\s*(defaultvalue|configFileValues\[\w+\]\.Value)\s*\);",
+              lambda m: "acCopyN(destValue, destSize, %s);" % m.group(1), "config load", count=3)
+    return sub_once(t, r"(?m)^static configFileValue[ \t]+configFileValues\[", lambda m: LONG_HELPER + m.group(0), "config helper")
+
+
+def fix_long_dialog(t):
+    """text typed in the settings windows"""
+    if MARK_LONG in t:
+        return t
+    t, n = re.subn(r"\bstrcpy\(\s*((?:g|gMain|encoder)(?:->|\.)\w+)\s*,\s*(LPCSTR\(\s*[\w>.\-]+\s*\))\s*\)",
+                   lambda m: "acCopy(%s, %s)" % (m.group(1), m.group(2)), t)
+    if n == 0:
+        fail("longvalue: no dialog copy found")
+    if "basicSettings->m_ServerPort" in t:
+        # patch 05 looks for the strcpy of the port: keep that line, cut the typed text before it
+        t = sub_once(t, r"\n([ \t]*)acCopy\(((?:g|encoder)->\w*Port), (LPCSTR\(\s*basicSettings->m_ServerPort\s*\))\)",
+                     lambda m: "\n%sbasicSettings->m_ServerPort = basicSettings->m_ServerPort.Left((int) sizeof(%s) - 1);\n%s" % (m.group(1), m.group(2), m.group(1)) + ("strcpy(%s, %s)" if m.group(2).startswith("g->") else "strcpy( %s, %s )") % (m.group(2), m.group(3)), "longvalue port")
+    return after(t, r'#include "MainWindow\.h"[^\n]*\n', LONG_HELPER, "longvalue helper")
+
+
+# ----------------------------------------------------------------------
 # apply
 # ----------------------------------------------------------------------
 
@@ -1031,4 +1122,8 @@ patch_file("shuicast/MainWindow.h", fix_move_header)
 patch_file("shuicast/MainWindow.cpp", fix_move_cpp)
 patch_file("shuicast/MainWindow.cpp", fix_delete)
 patch_file("shuicast/MainWindow.cpp", fix_add_limit)
+patch_file("shuicast/MainWindow.cpp", fix_conn_guard)
+patch_file("libshuicast/libshuicast.cpp", fix_long_lib)
+patch_file("shuicast/Config.cpp", fix_long_dialog)
+patch_file("shuicast/MainWindow.cpp", fix_long_dialog)
 print(TAG + ": done")

@@ -992,6 +992,23 @@ def fix_delete(t):
     return sub_once(t, r"void CMainWindow::OnPopupDelete\s*\(\s*\)(?s:.*?)\n\}\n", _delete_body, "OnPopupDelete")
 
 
+MARK_ADDLIMIT = TAG + ": addlimit"
+
+
+def fix_add_limit(t):
+    """The encoder arrays hold MAX_ENCODERS (10) entries: refuse to add one more."""
+    if MARK_ADDLIMIT in t:
+        return t
+    guard = (
+        "\n\t/* " + MARK_ADDLIMIT + " */\n"
+        "\tif (gMain.GetNumEncoders() >= MAX_ENCODERS) {\n"
+        '\t\tMessageBox( "You cannot add more than 10 encoders.", "Message", MB_OK );\n'
+        "\t\treturn;\n"
+        "\t}\n"
+    )
+    return after(t, r"void CMainWindow::OnAddEncoder\s*\(\s*\)\s*\{", guard, "OnAddEncoder limit")
+
+
 # ----------------------------------------------------------------------
 # apply
 # ----------------------------------------------------------------------
@@ -1013,4 +1030,5 @@ patch_file("shuicast/shuicast.rc", fix_move_rc)
 patch_file("shuicast/MainWindow.h", fix_move_header)
 patch_file("shuicast/MainWindow.cpp", fix_move_cpp)
 patch_file("shuicast/MainWindow.cpp", fix_delete)
+patch_file("shuicast/MainWindow.cpp", fix_add_limit)
 print(TAG + ": done")

@@ -20,8 +20,8 @@ jobs:
       contents: read
       actions: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: microsoft/setup-msbuild@v2
+      - uses: actions/checkout@v5
+      - uses: microsoft/setup-msbuild@v3
       
       - name: Apply patch 1 - Netladio (DJ name, charset, recording file name)
         run: python tools/shc_01_netladio.py trunk
@@ -78,7 +78,7 @@ jobs:
           Get-ChildItem trunk/external/lib/*.dll | Where-Object { $_.BaseName -notmatch '_d$' } | Copy-Item -Destination dist/
           Get-ChildItem dist | Select-Object Name, Length
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: shuicast-standalone-bundle
           path: dist/
